@@ -1,0 +1,100 @@
+name: Release MuseAI EN (portable Windows build)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream Tauri backend
+        shell: bash
+        run: |
+          # yejiming/MuseAI pinned at the SHA the scaffold was built against.
+          UPSTREAM_SHA="85c1ea76c565e697f510cc45d82ebcb352458dd6"
+          git clone --filter=blob:none --sparse https://github.com/yejiming/MuseAI.git upstream-src
+          cd upstream-src
+          git sparse-checkout set src-tauri
+          git checkout "$UPSTREAM_SHA"
+          cd ..
+          mv upstream-src/src-tauri ./src-tauri
+          rm -rf upstream-src
+          test -f src-tauri/tauri.conf.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Build Tauri app
+        shell: bash
+        run: |
+          npm run tauri -- build --config '{"identifier":"com.robprian.museai-en","bundle":{"targets":["nsis"]}}'
+
+      - name: Read package version
+        id: ver
+        shell: bash
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $dir = 'MuseAI-portable-win64'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          Copy-Item 'src-tauri\target\release\MuseAI.exe' $dir
+          if (Test-Path 'src-tauri\resources') {
+            Copy-Item 'src-tauri\resources' "$dir\resources" -Recurse
+          }
+          Compress-Archive -Path "$dir\*" -DestinationPath "MuseAI-portable-win64-v$version-en.zip" -Force
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: museai-en-portable-windows
+          path: |
+            MuseAI-portable-win64-v${{ steps.ver.outputs.version }}-en.zip
+            src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}-en.${{ github.run_number }}
+          name: MuseAI EN Portable v${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
+          draft: false
+          prerelease: false
+          files: |
+            MuseAI-portable-win64-v${{ steps.ver.outputs.version }}-en.zip
+            src-tauri/target/release/bundle/nsis/*.exe
+          body: |
+            ## MuseAI EN — English portable build
+
+            **Portable ZIP (recommended):** download `MuseAI-portable-win64-v${{ steps.ver.outputs.version }}-en.zip`, unzip anywhere, and run `MuseAI.exe`. No installer, no admin rights needed. An NSIS installer is also attached if you prefer a classic install.
+
+            **Requirements:** Windows 10 1803+ / 11 with WebView2 (preinstalled on Windows 10 1803 and later / Windows 11).
+
+            **First launch:** open Settings > Model Configuration and add your API key (OpenAI, DeepSeek, or any OpenAI-compatible endpoint).
+
+            **Data storage:** user data (sessions, settings, model configs) is stored under `%APPDATA%/com.robprian.museai-en`.
+
+            **What it is:** the five MuseAI AI-companion tools — Background, Chat, Adventure, Bond, Settings — with an English UI translated from [yejiming/dsh-museai-tavern](https://github.com/yejiming/dsh-museai-tavern), running on the Tauri (Rust) backend from [yejiming/MuseAI](https://github.com/yejiming/MuseAI) pinned at `85c1ea76c565e697f510cc45d82ebcb352458dd6`.
+
+            **DeepSeek Harness users:** if you run the DeepSeek Harness client, prefer the original plugin at [yejiming/dsh-museai-tavern](https://github.com/yejiming/dsh-museai-tavern) — this portable build is for everyone else.
